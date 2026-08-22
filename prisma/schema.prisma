@@ -1,0 +1,544 @@
+// ============================================================================
+// Tero Network — Prisma Schema
+// قاعدة بيانات جديدة بالكامل مبنية على تحليل نقاط الـ API الموجودة بالفرونت اند
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// المستخدمون والمصادقة
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  FROZEN
+  BANNED
+  PENDING_VERIFICATION
+}
+
+model User {
+  id                    String    @id @default(uuid())
+  email                 String    @unique
+  passwordHash          String
+  fullName              String?
+  avatarUrl             String?
+  status                UserStatus @default(PENDING_VERIFICATION)
+  emailVerified         Boolean   @default(false)
+
+  referralCode          String    @unique
+  referredById          String?
+  referredBy            User?     @relation("Referrals", fields: [referredById], references: [id])
+  referrals             User[]    @relation("Referrals")
+
+  honorPoints           Int       @default(0)
+
+  withdrawalPasswordHash String?
+  withdrawalWalletAddress String?
+
+  lastLoginAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  wallet                 Wallet?
+  transactions            Transaction[]
+  withdrawalRequests      WithdrawalRequest[]
+  walletChangeRequests    WalletChangeRequest[]
+  memberships             UserMembership[]
+  taskSubmissions         TaskSubmission[]
+  taskStreak               TaskStreak?
+  notifications             Notification[]
+  telegramLink              TelegramLink?
+  honorPointEntries         HonorPointEntry[]
+  commissionsEarned         ReferralCommission[] @relation("Earner")
+  commissionsFromMe         ReferralCommission[] @relation("Source")
+  leaderPayouts              LeaderPayout[]
+  storageFiles                 StorageFile[]
+  emailVerificationTokens       EmailVerificationToken[]
+  passwordResetTokens             PasswordResetToken[]
+
+  @@index([referredById])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  otp       String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+  MODERATOR
+}
+
+model Admin {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String
+  name          String?
+  role          AdminRole @default(ADMIN)
+  avatarUrl     String?
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// المحفظة والمعاملات المالية
+// ---------------------------------------------------------------------------
+
+model Wallet {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance          Decimal  @default(0) @db.Decimal(24, 8)
+  lockedBalance    Decimal  @default(0) @db.Decimal(24, 8)
+  depositAddress   String?  @unique
+  network          String   @default("polygon")
+  currency         String   @default("USDT")
+  updatedAt        DateTime @updatedAt
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  MEMBERSHIP_PURCHASE
+  REFERRAL_COMMISSION
+  TASK_REWARD
+  HONOR_BONUS
+  LEADER_PAYOUT
+  ADMIN_ADJUSTMENT
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Transaction {
+  id          String            @id @default(uuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        TransactionType
+  amount      Decimal           @db.Decimal(24, 8)
+  currency    String            @default("USDT")
+  status      TransactionStatus @default(PENDING)
+  txHash      String?
+  network     String?           @default("polygon")
+  meta        Json?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model WithdrawalRequest {
+  id            String           @id @default(uuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount        Decimal          @db.Decimal(24, 8)
+  walletAddress String
+  network       String           @default("polygon")
+  status        WithdrawalStatus @default(PENDING)
+  adminNote     String?
+  txHash        String?
+  requestedAt   DateTime         @default(now())
+  processedAt   DateTime?
+  processedBy   String?
+
+  @@index([userId])
+  @@index([status])
+}
+
+enum ChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model WalletChangeRequest {
+  id          String               @id @default(uuid())
+  userId      String
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  oldAddress  String?
+  newAddress  String
+  status      ChangeRequestStatus  @default(PENDING)
+  reason      String?
+  createdAt   DateTime             @default(now())
+  reviewedAt  DateTime?
+  reviewedBy  String?
+
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// خطط العضوية
+// ---------------------------------------------------------------------------
+
+model MembershipPlan {
+  id                    String   @id @default(uuid())
+  name                  String
+  description           String?
+  price                 Decimal  @db.Decimal(24, 8)
+  durationDays          Int
+  dailyProfitRate       Decimal  @default(0) @db.Decimal(6, 4)
+  referralCommissionRate Decimal @default(0) @db.Decimal(6, 4)
+  benefits             Json?
+  isActive              Boolean  @default(true)
+  sortOrder             Int      @default(0)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  userMemberships        UserMembership[]
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+model UserMembership {
+  id            String            @id @default(uuid())
+  userId        String
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId        String
+  plan          MembershipPlan    @relation(fields: [planId], references: [id])
+  status        MembershipStatus  @default(ACTIVE)
+  purchasedAt   DateTime          @default(now())
+  expiresAt     DateTime
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// الإحالات والعمولات
+// ---------------------------------------------------------------------------
+
+model ReferralCommissionConfig {
+  id         String  @id @default(uuid())
+  level      Int     @unique
+  percentage Decimal @db.Decimal(6, 4)
+  isActive   Boolean @default(true)
+}
+
+model ReferralCommission {
+  id           String   @id @default(uuid())
+  earnerId     String
+  earner       User     @relation("Earner", fields: [earnerId], references: [id], onDelete: Cascade)
+  sourceUserId String
+  sourceUser   User     @relation("Source", fields: [sourceUserId], references: [id], onDelete: Cascade)
+  level        Int
+  amount       Decimal  @db.Decimal(24, 8)
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  @@index([earnerId])
+}
+
+enum LeaderPayoutStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+model LeaderPayout {
+  id         String             @id @default(uuid())
+  userId     String
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  period     String
+  amount     Decimal            @db.Decimal(24, 8)
+  status     LeaderPayoutStatus @default(PENDING)
+  paidAt     DateTime?
+  createdAt  DateTime           @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// المهام الأسبوعية وأكواد الوصول
+// ---------------------------------------------------------------------------
+
+enum TaskStatus {
+  ACTIVE
+  ARCHIVED
+  DRAFT
+}
+
+model Task {
+  id           String     @id @default(uuid())
+  title        String
+  description  String?
+  link         String?
+  weekNumber   Int
+  reward       Decimal    @default(0) @db.Decimal(24, 8)
+  points       Int        @default(0)
+  status       TaskStatus @default(ACTIVE)
+  requiresCode Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  submissions  TaskSubmission[]
+
+  @@index([weekNumber])
+}
+
+model TaskAccessCode {
+  id         String   @id @default(uuid())
+  code       String   @unique
+  weekNumber Int?
+  expiresAt  DateTime?
+  usageLimit Int?
+  usedCount  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+}
+
+model TaskCodeGenSettings {
+  id                   String   @id @default(uuid())
+  rotationIntervalHours Int     @default(24)
+  autoSendChannel       String? // telegram/email/none
+  isAutoGenEnabled      Boolean @default(false)
+  updatedAt             DateTime @updatedAt
+}
+
+model TaskCodeGenLog {
+  id           String   @id @default(uuid())
+  code         String
+  method       String   // auto | manual
+  generatedBy  String?  // admin id, نull إذا آلي
+  sentTo       String?
+  createdAt    DateTime @default(now())
+}
+
+enum SubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model TaskSubmission {
+  id          String           @id @default(uuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskId      String
+  task        Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  accessCode  String?
+  proofUrl    String?
+  status      SubmissionStatus @default(PENDING)
+  reward      Decimal?         @db.Decimal(24, 8)
+  submittedAt DateTime         @default(now())
+  reviewedAt  DateTime?
+  reviewedBy  String?
+
+  @@index([userId])
+  @@index([taskId])
+  @@index([status])
+}
+
+model TaskStreak {
+  userId         String   @id
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currentStreak  Int      @default(0)
+  longestStreak  Int      @default(0)
+  lastCompletedAt DateTime?
+}
+
+model TaskAlert {
+  id        String   @id @default(uuid())
+  type      String
+  message   String
+  severity  String   @default("info") // info | warning | critical
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// نقاط الشرف (Honor Points)
+// ---------------------------------------------------------------------------
+
+model HonorPointEntry {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  points    Int
+  reason    String
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// الإشعارات
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String?  // null = إشعار عام لكل المستخدمين
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  type      String   @default("info")
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// تيليجرام
+// ---------------------------------------------------------------------------
+
+enum TelegramLinkStatus {
+  PENDING
+  LINKED
+  UNLINKED
+}
+
+model TelegramLink {
+  id                String              @id @default(uuid())
+  userId            String              @unique
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  telegramUserId    String?
+  telegramUsername  String?
+  linkToken         String?             @unique
+  status            TelegramLinkStatus  @default(PENDING)
+  linkedAt          DateTime?
+  createdAt         DateTime            @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// إعدادات الموقع والصيانة
+// ---------------------------------------------------------------------------
+
+model SiteSetting {
+  key       String   @id
+  value     Json
+  isPublic  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// الخزينة والمحفظة الساخنة (Treasury / Hot Wallet)
+// ---------------------------------------------------------------------------
+
+model TreasuryAddress {
+  id        String   @id @default(uuid())
+  network   String   @default("polygon")
+  address   String   @unique
+  label     String?
+  type      String   @default("hot") // hot | cold | gas
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model TreasurySetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model HotWalletSnapshot {
+  id            String   @id @default(uuid())
+  address       String
+  network       String   @default("polygon")
+  balance       Decimal  @db.Decimal(24, 8)
+  gasBalance    Decimal? @db.Decimal(24, 8)
+  status        String   @default("healthy") // healthy | low | critical
+  checkedAt     DateTime @default(now())
+}
+
+model GasManagementSetting {
+  id               String   @id @default(uuid())
+  minGasReserve    Decimal  @default(0) @db.Decimal(24, 8)
+  refillThreshold  Decimal  @default(0) @db.Decimal(24, 8)
+  autoRefillEnabled Boolean @default(false)
+  updatedAt        DateTime @updatedAt
+}
+
+enum SweepStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model SweepOperation {
+  id          String      @id @default(uuid())
+  fromAddress String
+  toAddress   String
+  amount      Decimal     @db.Decimal(24, 8)
+  network     String      @default("polygon")
+  txHash      String?
+  status      SweepStatus @default(PENDING)
+  triggeredBy String      @default("manual") // auto | manual
+  createdAt   DateTime    @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// مراقبة عقد RPC
+// ---------------------------------------------------------------------------
+
+enum RpcNodeStatus {
+  HEALTHY
+  DEGRADED
+  DOWN
+}
+
+model RpcNode {
+  id            String        @id @default(uuid())
+  network       String        @default("polygon")
+  url           String
+  priority      Int           @default(0)
+  isActive      Boolean       @default(true)
+  lastLatencyMs Int?
+  status        RpcNodeStatus @default(HEALTHY)
+  lastCheckedAt DateTime?
+  createdAt     DateTime      @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// تخزين الملفات (رفع صور، إثباتات مهام...)
+// ---------------------------------------------------------------------------
+
+model StorageFile {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  filename  String
+  url       String
+  mimeType  String?
+  size      Int?
+  purpose   String?  // avatar | task-proof | chat-avatar ...
+  createdAt DateTime @default(now())
+}
